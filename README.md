@@ -46,12 +46,12 @@ Tested with a Raspberry Pi 4 running PiKVM and a TESmart HKS401-M24.
 A normal 3-conductor TRS plug is **not sufficient**. The HKS401 UART
 jack carries four conductors:
 
-  TRRS contact   Function
-  -------------- -----------
-  Tip            +3.3 V
-  Ring           HKS401 TX
-  Ring           HKS401 RX
-  Sleeve         GND
+| TRRS contact | Function |
+| --- | --- |
+| Tip | +3.3 V |
+| Ring 1 | HKS401 TX |
+| Ring 2 | HKS401 RX |
+| Sleeve | GND |
 
 The two ring positions should be verified on the individual unit before
 wiring. On the tested HKS401, UART traces to the STM32F030C8T6:
@@ -64,12 +64,12 @@ proper bidirectional communication. Moving to TRRS solved the problem.
 
 ### Raspberry Pi wiring
 
-  Raspberry Pi                      HKS401
-  --------------------------------- ---------------------
-  Physical pin 6 --- GND            GND / Sleeve
-  Physical pin 8 --- GPIO14/TXD0    HKS401 RX
-  Physical pin 10 --- GPIO15/RXD0   HKS401 TX
-  No connection                     HKS401 +3.3 V / Tip
+| Raspberry Pi | HKS401 |
+| --- | --- |
+| Physical pin 6 — GND | GND / Sleeve |
+| Physical pin 8 — GPIO14/TXD0 | HKS401 RX |
+| Physical pin 10 — GPIO15/RXD0 | HKS401 TX |
+| No connection | HKS401 +3.3 V / Tip |
 
 **Leave the HKS401 +3.3 V Tip disconnected.** Only TX, RX and common
 ground are required.
@@ -141,31 +141,31 @@ instead be treated as command-specific until all fields are understood.
 
 ## PC selection
 
-  Function   Frame
-  ---------- ---------------------
-  PC1        `AA BB 03 00 00 68`
-  PC2        `AA BB 03 00 01 69`
-  PC3        `AA BB 03 00 02 6A`
-  PC4        `AA BB 03 00 03 6B`
-  Next PC    `AA BB 03 FF 00 67`
+| Function | Frame |
+| --- | --- |
+| PC1 | `AA BB 03 00 00 68` |
+| PC2 | `AA BB 03 00 01 69` |
+| PC3 | `AA BB 03 00 02 6A` |
+| PC4 | `AA BB 03 00 03 6B` |
+| Next PC | `AA BB 03 FF 00 67` |
 
 ## Queries implemented
 
-  State                          Query
-  ------------------------------ ---------------------
-  PC/monitor topology            `AA BB 81 00 00 E6`
-  Keyboard/mouse focus           `AA BB 82 00 FF E6`
-  Monitor/PC correspondence      `AA BB 83 00 FF E7`
-  Buzzer                         `AA BB 84 00 FF E8`
-  Lighting                       `AA BB 85 00 FF E9`
-  Legacy Emulation               `AA BB 88 00 FF EC`
-  Ethernet/network               `AA BB 89 00 FF ED`
-  Mouse                          `AA BB 8A 00 FF EE`
-  Fan                            `AA BB 8B 00 FF EF`
-  Audio Follow                   `AA BB 8C 00 FF F0`
-  Audio selection                `AA BB 8D 00 FF F1`
-  **Actual Auto Scan runtime**   `AA BB 8E 00 FF F2`
-  Separate unresolved flag       `AA BB 8F 00 FF F3`
+| State | Query |
+| --- | --- |
+| PC/monitor topology | `AA BB 81 00 00 E6` |
+| Keyboard/mouse focus | `AA BB 82 00 FF E6` |
+| Monitor/PC correspondence | `AA BB 83 00 FF E7` |
+| Buzzer | `AA BB 84 00 FF E8` |
+| Lighting | `AA BB 85 00 FF E9` |
+| Legacy Emulation | `AA BB 88 00 FF EC` |
+| Ethernet/network | `AA BB 89 00 FF ED` |
+| Mouse | `AA BB 8A 00 FF EE` |
+| Fan | `AA BB 8B 00 FF EF` |
+| Audio Follow | `AA BB 8C 00 FF F0` |
+| Audio selection | `AA BB 8D 00 FF F1` |
+| **Actual Auto Scan runtime** | `AA BB 8E 00 FF F2` |
+| Separate unresolved flag | `AA BB 8F 00 FF F3` |
 
 `0x86` and `0x87` did not respond on the tested HKS401-M24. `0x07/0x87`
 appears associated with a Mixed Mode feature not supported/implemented
