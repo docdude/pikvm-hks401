@@ -7,16 +7,6 @@ HKS401-M24** 4-port KVM.
 > HKS401-M24 running `HKS401-M24-SOFMUS2_V_V111-APP` (build May 19,
 > 2025). Other firmware/models may differ.
 
-## Repository name
-
-**Recommended: `pikvm-hks401`**
-
-It is short, searchable, and describes the integration without implying
-this is official TESmart software.
-
-Alternatives: `pikvm-tesmart-hks401`, `hks401-pikvm`, `hks401-uart`, or
-`tesmart-hks401-uart`.
-
 ## Overview
 
 This project lets PiKVM control and monitor a TESmart HKS401-M24 through
@@ -46,18 +36,18 @@ Tested with a Raspberry Pi 4 running PiKVM and a TESmart HKS401-M24.
 A normal 3-conductor TRS plug is **not sufficient**. The HKS401 UART
 jack carries four conductors:
 
-| TRRS contact | Function |
-| --- | --- |
-| Tip | +3.3 V |
-| Ring 1 | HKS401 TX |
-| Ring 2 | HKS401 RX |
-| Sleeve | GND |
-
+| TRRS contact | Function | STM32F030C8T6 |
+| --- | --- | --- |
+| Tip | +3.3 V | NC |
+| Ring 1 | HKS401 TX | Pin 30 — PA9 / USART1_TX |
+| Ring 2 | HKS401 RX | Pin 31 — PA10 / USART1_RX |
+| Sleeve | GND | GND(jack's leg to GND |
+<img src="pics/trrs.jpeg" alt="TRRS Plug" width="200">
 The two ring positions should be verified on the individual unit before
 wiring. On the tested HKS401, UART traces to the STM32F030C8T6:
 
--   PA9 = USART1_TX
--   PA10 = USART1_RX
+-   Pin 30 - PA9 = USART1_TX
+-   Pin 31 - PA10 = USART1_RX
 
 An earlier TRS plug grounded the second ring/HKS401 RX and prevented
 proper bidirectional communication. Moving to TRRS solved the problem.
