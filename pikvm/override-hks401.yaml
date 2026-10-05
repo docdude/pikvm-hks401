@@ -13,29 +13,37 @@ kvmd:
                 pin: 1
                 mode: output
                 switch: true
+                pulse:
+                    delay: 0
 
             hks401_pc2:
                 driver: hks401
                 pin: 2
                 mode: output
                 switch: true
+                pulse:
+                    delay: 0
 
             hks401_pc3:
                 driver: hks401
                 pin: 3
                 mode: output
                 switch: true
+                pulse:
+                    delay: 0
 
             hks401_pc4:
                 driver: hks401
                 pin: 4
                 mode: output
                 switch: true
+                pulse:
+                    delay: 0
 
         view:
             header:
                 title: TESmart
             table:
                 - ["#HKS401-M24 Input"]
-                - ["hks401_pc1|PC 1", "hks401_pc2|PC 2"]
-                - ["hks401_pc3|PC 3", "hks401_pc4|PC 4"]
+                - ["hks401_pc1|", "hks401_pc2|"]
+                - ["hks401_pc3|", "hks401_pc4|"]

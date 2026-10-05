@@ -1,0 +1,101 @@
+/*
+ * HKS401-M24 PiKVM UI
+ * TESmart PC selector buttons.
+ */
+
+div.switch-box:has(input[class*="__gpio-switch-hks401_pc"]) {
+    width: 72px;
+    margin: 3px;
+}
+
+div.switch-box:has(input[class*="__gpio-switch-hks401_pc"]) label {
+    display: block;
+    border: 1px solid #8a3030;
+    border-radius: 5px;
+    background: #5c2020;
+    cursor: pointer;
+}
+
+/* Disable the stock sliding-switch presentation. */
+div.switch-box:has(input[class*="__gpio-switch-hks401_pc"]) span.switch {
+    display: none;
+}
+
+div.switch-box:has(input[class*="__gpio-switch-hks401_pc"]) span.switch-inner {
+    display: block;
+    width: 100%;
+    margin: 0;
+}
+
+div.switch-box:has(input[class*="__gpio-switch-hks401_pc"]) span.switch-inner:before,
+div.switch-box:has(input[class*="__gpio-switch-hks401_pc"]) span.switch-inner:after {
+    float: none;
+    display: none;
+    width: 100%;
+    height: 30px;
+    padding: 0;
+    line-height: 30px;
+    text-align: center;
+    font-size: 12px;
+    font-weight: bold;
+    box-sizing: border-box;
+}
+
+/* Unselected PC button. */
+div.switch-box:has(input[class*="__gpio-switch-hks401_pc"]) span.switch-inner:after {
+    display: block;
+    background: #5c2020;
+    color: #fff;
+}
+
+/* Put the PC identity directly inside its button. */
+div.switch-box:has(input.__gpio-switch-hks401_pc1) span.switch-inner:after,
+div.switch-box:has(input.__gpio-switch-hks401_pc1) span.switch-inner:before {
+    content: "PC 1";
+}
+
+div.switch-box:has(input.__gpio-switch-hks401_pc2) span.switch-inner:after,
+div.switch-box:has(input.__gpio-switch-hks401_pc2) span.switch-inner:before {
+    content: "PC 2";
+}
+
+div.switch-box:has(input.__gpio-switch-hks401_pc3) span.switch-inner:after,
+div.switch-box:has(input.__gpio-switch-hks401_pc3) span.switch-inner:before {
+    content: "PC 3";
+}
+
+div.switch-box:has(input.__gpio-switch-hks401_pc4) span.switch-inner:after,
+div.switch-box:has(input.__gpio-switch-hks401_pc4) span.switch-inner:before {
+    content: "PC 4";
+}
+
+/* Selected PC. */
+div.switch-box:has(input[class*="__gpio-switch-hks401_pc"]) input:checked + label {
+    border-color: #3b8f48;
+    background: #246b31;
+}
+
+div.switch-box:has(input[class*="__gpio-switch-hks401_pc"]) input:checked + label span.switch-inner:after {
+    display: none;
+}
+
+div.switch-box:has(input[class*="__gpio-switch-hks401_pc"]) input:checked + label span.switch-inner:before {
+    display: block;
+    background: #246b31;
+    color: #fff;
+}
+
+/* Offline/disabled. */
+div.switch-box:has(input[class*="__gpio-switch-hks401_pc"]) input:disabled + label {
+    opacity: 0.45;
+    cursor: default;
+}
+
+/* HKS401 selector cleanup: suppress remaining stock switch artifacts. */
+div.switch-box:has(input[class*="__gpio-switch-hks401_pc"]) label span.switch {
+    display: none !important;
+}
+
+div.switch-box:has(input[class*="__gpio-switch-hks401_pc"]) {
+    overflow: hidden;
+}
