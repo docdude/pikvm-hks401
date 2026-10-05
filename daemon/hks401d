@@ -1,0 +1,427 @@
+#!/usr/bin/env python3
+
+import json
+import os
+import grp
+import selectors
+import serial
+import socket
+import time
+
+SERIAL_DEV = "/dev/ttyAMA0"
+BAUD = 9600
+SOCKET_PATH = "/run/hks401d.sock"
+STATE_PATH = "/run/hks401d-state.json"
+
+SELECT = {
+    1: bytes.fromhex("AA BB 03 00 00 68"),
+    2: bytes.fromhex("AA BB 03 00 01 69"),
+    3: bytes.fromhex("AA BB 03 00 02 6A"),
+    4: bytes.fromhex("AA BB 03 00 03 6B"),
+}
+
+SETTERS = {
+    ("buzzer", "off"): bytes.fromhex("AA BB 04 00 00 69"),
+    ("buzzer", "on"):  bytes.fromhex("AA BB 04 00 01 6A"),
+
+    ("lighting", "off"):       bytes.fromhex("AA BB 05 02 00 6C"),
+    ("lighting", "indicator"): bytes.fromhex("AA BB 05 02 01 6D"),
+    ("lighting", "marquee"):   bytes.fromhex("AA BB 05 02 02 6E"),
+    ("lighting", "breathing"): bytes.fromhex("AA BB 05 02 03 6F"),
+
+    ("fan", "off"):  bytes.fromhex("AA BB 0B 00 00 70"),
+    ("fan", "auto"): bytes.fromhex("AA BB 0B 00 01 71"),
+    ("fan", "low"):  bytes.fromhex("AA BB 0B 00 02 72"),
+    ("fan", "high"): bytes.fromhex("AA BB 0B 00 03 73"),
+
+    ("mouse", "off"): bytes.fromhex("AA BB 0A 00 00 6F"),
+    ("mouse", "on"):  bytes.fromhex("AA BB 0A 00 01 70"),
+
+    ("audio_follow", "off"): bytes.fromhex("AA BB 0C 00 00 71"),
+    ("audio_follow", "on"):  bytes.fromhex("AA BB 0C 00 01 72"),
+
+    ("audio", "pc1"): bytes.fromhex("AA BB 0D 00 00 72"),
+    ("audio", "pc2"): bytes.fromhex("AA BB 0D 00 01 73"),
+    ("audio", "pc3"): bytes.fromhex("AA BB 0D 00 02 74"),
+    ("audio", "pc4"): bytes.fromhex("AA BB 0D 00 03 75"),
+
+    ("legacy_emulation", "off"): bytes.fromhex("AA BB 08 00 00 6D"),
+    ("legacy_emulation", "on"):  bytes.fromhex("AA BB 08 00 01 6E"),
+    # Backward-compatible alias.
+    ("usb_compat", "off"): bytes.fromhex("AA BB 08 00 00 6D"),
+    ("usb_compat", "on"):  bytes.fromhex("AA BB 08 00 01 6E"),
+
+    ("network", "all_on"):  bytes.fromhex("AA BB 09 00 0F 7D"),
+    ("network", "pc1_off"): bytes.fromhex("AA BB 09 00 0E 7C"),
+    ("network", "pc2_off"): bytes.fromhex("AA BB 09 00 0D 7B"),
+    ("network", "pc3_off"): bytes.fromhex("AA BB 09 00 0B 79"),
+    ("network", "pc4_off"): bytes.fromhex("AA BB 09 00 07 75"),
+
+    # Actual Auto Scan runtime control, confirmed on HKS401-M24 V111.
+    ("autoscan", "off"): bytes.fromhex("AA BB 0E 00 00 73"),
+    ("autoscan", "on"):  bytes.fromhex("AA BB 0E 00 01 74"),
+
+    # Separate 0x0F/0x8F flag documented as Auto Scan, but empirically
+    # independent of the actual Auto Scan runtime on HKS401-M24 V111.
+    ("autoscan_uart_flag", "off"): bytes.fromhex("AA BB 0F 00 00 74"),
+    ("autoscan_uart_flag", "on"):  bytes.fromhex("AA BB 0F 00 01 75"),
+}
+
+QUERIES = {
+    "ports":              bytes.fromhex("AA BB 81 00 00 E6"),
+    "focus":              bytes.fromhex("AA BB 82 00 FF E6"),
+    "correspondence":     bytes.fromhex("AA BB 83 00 FF E7"),
+    "buzzer":             bytes.fromhex("AA BB 84 00 FF E8"),
+    "lighting":           bytes.fromhex("AA BB 85 00 FF E9"),
+    # 0x87 is not listed by the HKS401-M24 manual and produced no
+    # response in repeated tests, including with two connected PCs.
+    "legacy_emulation":   bytes.fromhex("AA BB 88 00 FF EC"),
+    "network":            bytes.fromhex("AA BB 89 00 FF ED"),
+    "mouse":              bytes.fromhex("AA BB 8A 00 FF EE"),
+    "fan":                bytes.fromhex("AA BB 8B 00 FF EF"),
+    "audio_follow":       bytes.fromhex("AA BB 8C 00 FF F0"),
+    "audio":              bytes.fromhex("AA BB 8D 00 FF F1"),
+    # Actual Auto Scan runtime status: 00=stopped, 01=running.
+    "autoscan":           bytes.fromhex("AA BB 8E 00 FF F2"),
+    "autoscan_uart_flag": bytes.fromhex("AA BB 8F 00 FF F3"),
+}
+
+# Accepted command aliases.  Raw response/state keys remain canonical.
+QUERY_ALIASES = {
+    "mapping": "correspondence",
+    "usb_compat": "legacy_emulation",
+}
+
+
+QUERY_NAMES_BY_CMD = {
+    packet[2]: name
+    for name, packet in QUERIES.items()
+}
+
+state = {
+    "active_pc": None,
+    "focus_pc": None,
+    "monitor_pc": None,
+    "monitor": None,
+    "ports": {"pcs": None, "monitors": None, "raw": None},
+    "buzzer": None,
+    "lighting": None,
+    "legacy_emulation": None,
+    "network_mask": None,
+    "network_ports": {"pc1": None, "pc2": None, "pc3": None, "pc4": None},
+    "network_focus_pc": None,
+    "mouse": None,
+    "fan": None,
+    "audio_follow": None,
+    "audio_pc": None,
+    "autoscan": None,
+    "autoscan_uart_flag": None,
+    "responses": {},
+    "last_frame": None,
+    "last_update": None,
+}
+
+
+rxbuf = bytearray()
+
+
+def save_state():
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f, separators=(",", ":"))
+    os.replace(tmp, STATE_PATH)
+
+
+def checksum_ok(frame):
+    return len(frame) >= 5 and (sum(frame[:-1]) & 0xFF) == frame[-1]
+
+
+def process_frame(frame):
+    cmd = frame[2]
+    length = frame[3]
+    payload = frame[4:4 + length]
+
+    state["last_frame"] = frame.hex(" ")
+    state["last_update"] = time.time()
+
+    query_name = QUERY_NAMES_BY_CMD.get(cmd)
+    if query_name is not None:
+        state["responses"][query_name] = payload.hex(" ")
+
+    # 0x81: documented number of PCs and monitors.  On this M24,
+    # payload 0x41 corresponds to 4 PCs / 1 monitor.
+    if cmd == 0x81 and length >= 1:
+        raw = payload[0]
+        state["ports"] = {
+            "pcs": (raw >> 4) & 0x0F,
+            "monitors": raw & 0x0F,
+            "raw": f"{raw:02x}",
+        }
+
+    # 0x82: keyboard/mouse focus, 00..03 = PC1..PC4.
+    elif cmd == 0x82 and length >= 1 and payload[0] <= 3:
+        pc = payload[0] + 1
+        state["focus_pc"] = pc
+        state["active_pc"] = pc
+
+    # 0x83: monitor-to-PC correspondence.
+    # Observed M24 payload: 01 xx, where monitor=1 and xx=00..03.
+    elif cmd == 0x83 and length >= 2 and payload[1] <= 3:
+        state["monitor"] = payload[0]
+        pc = payload[1] + 1
+        state["monitor_pc"] = pc
+        state["active_pc"] = pc
+
+    # 0x84: buzzer, 00=off, 01=on.
+    elif cmd == 0x84 and length >= 1 and payload[0] in (0, 1):
+        state["buzzer"] = "on" if payload[0] else "off"
+
+    # 0x85: lighting. Observed payload 04 mode.
+    elif cmd == 0x85 and length >= 2:
+        state["lighting"] = {0: "off", 1: "indicator", 2: "marquee", 3: "breathing"}.get(
+            payload[1], f"unknown_{payload[1]:02x}"
+        )
+
+    # 0x88: Legacy Emulation, 00=off, 01=on.
+    elif cmd == 0x88 and length >= 1 and payload[0] in (0, 1):
+        state["legacy_emulation"] = "on" if payload[0] else "off"
+
+    # 0x89: Ethernet enable mask + K/M focus. Bits 0..3 = PC1..PC4.
+    elif cmd == 0x89 and length >= 2:
+        mask = payload[0] & 0x0F
+        state["network_mask"] = f"0x{mask:02x}"
+        state["network_ports"] = {
+            f"pc{i + 1}": bool(mask & (1 << i)) for i in range(4)
+        }
+        if payload[1] <= 3:
+            state["network_focus_pc"] = payload[1] + 1
+
+    # 0x8A: mouse-wheel switching, 00=off, 01=on.
+    elif cmd == 0x8A and length >= 1 and payload[0] in (0, 1):
+        state["mouse"] = "on" if payload[0] else "off"
+
+    # 0x8B: fan. Observed payload 04 mode.
+    elif cmd == 0x8B and length >= 2:
+        state["fan"] = {0: "off", 1: "auto", 2: "low", 3: "high"}.get(
+            payload[1], f"unknown_{payload[1]:02x}"
+        )
+
+    # 0x8C: audio-follow, 00=off, 01=on.
+    elif cmd == 0x8C and length >= 1 and payload[0] in (0, 1):
+        state["audio_follow"] = "on" if payload[0] else "off"
+
+    # 0x8D: selected audio PC, 00..03 = PC1..PC4.
+    elif cmd == 0x8D and length >= 1 and payload[0] <= 3:
+        state["audio_pc"] = payload[0] + 1
+
+    # 0x8E: actual Auto Scan runtime status, confirmed against
+    # keyboard hotkey/Esc and direct 0x0E start/stop control.
+    elif cmd == 0x8E and length >= 1 and payload[0] in (0, 1):
+        state["autoscan"] = "on" if payload[0] else "off"
+
+    # 0x8F: separate UART flag documented as Auto Scan, but on V111 it
+    # does not start/stop Auto Scan and does not reflect runtime state.
+    elif cmd == 0x8F and length >= 1 and payload[0] in (0, 1):
+        state["autoscan_uart_flag"] = "on" if payload[0] else "off"
+
+    save_state()
+
+    print(
+        f"RX {frame.hex(' ')}"
+        f"  cmd=0x{cmd:02X} len={length}"
+        f" active={state['active_pc']}",
+        flush=True,
+    )
+
+
+def parse_rx(data):
+    global rxbuf
+    rxbuf.extend(data)
+
+    while True:
+        # Synchronize to AA BB.
+        pos = rxbuf.find(b"\xAA\xBB")
+
+        if pos < 0:
+            # Preserve AA in case BB arrives in the next read.
+            if rxbuf[-1:] == b"\xAA":
+                rxbuf = bytearray(b"\xAA")
+            else:
+                rxbuf.clear()
+            return
+
+        if pos:
+            del rxbuf[:pos]
+
+        # AA BB CMD LEN
+        if len(rxbuf) < 4:
+            return
+
+        payload_len = rxbuf[3]
+        frame_len = payload_len + 5
+
+        # Protect against nonsense length after corruption.
+        if payload_len > 64:
+            del rxbuf[0]
+            continue
+
+        if len(rxbuf) < frame_len:
+            return
+
+        frame = bytes(rxbuf[:frame_len])
+
+        if not checksum_ok(frame):
+            print(f"BAD CHECKSUM {frame.hex(' ')}", flush=True)
+            # Shift one byte and resynchronize.
+            del rxbuf[0]
+            continue
+
+        del rxbuf[:frame_len]
+        process_frame(frame)
+
+
+def send(ser, packet):
+    ser.write(packet)
+    ser.flush()
+    print(f"TX {packet.hex(' ')}", flush=True)
+
+
+def handle_command(ser, text):
+    parts = text.strip().lower().split()
+
+    if not parts:
+        return {"ok": False, "error": "empty command"}
+
+    if parts[0] == "select" and len(parts) == 2:
+        try:
+            pc = int(parts[1])
+        except ValueError:
+            return {"ok": False, "error": "invalid PC"}
+
+        if pc not in SELECT:
+            return {"ok": False, "error": "PC must be 1-4"}
+
+        send(ser, SELECT[pc])
+
+        # UART-initiated switching does not generate the unsolicited
+        # 0x82/0x83 notifications produced by physical switching.
+        # Query both actual K/M focus and monitor-to-PC correspondence.
+        time.sleep(0.10)
+        send(ser, QUERIES["focus"])
+        time.sleep(0.05)
+        send(ser, QUERIES["correspondence"])
+
+        return {"ok": True, "selected": pc}
+
+    if parts[0] == "set" and len(parts) == 3:
+        key = (parts[1], parts[2])
+
+        if key not in SETTERS:
+            return {
+                "ok": False,
+                "error": "unknown setting/value",
+            }
+
+        send(ser, SETTERS[key])
+
+        # Query the setting back so state reflects the hardware,
+        # rather than assuming the command succeeded.
+        time.sleep(0.10)
+        query_name = QUERY_ALIASES.get(parts[1], parts[1])
+        if query_name in QUERIES:
+            send(ser, QUERIES[query_name])
+
+        return {
+            "ok": True,
+            "setting": parts[1],
+            "value": parts[2],
+        }
+
+    if parts[0] == "query" and len(parts) == 2:
+        requested_name = parts[1]
+        name = QUERY_ALIASES.get(requested_name, requested_name)
+
+        if name not in QUERIES:
+            return {
+                "ok": False,
+                "error": "unknown query",
+                "queries": sorted(QUERIES),
+            }
+
+        send(ser, QUERIES[name])
+        return {"ok": True, "query": name}
+
+    if parts[0] == "state":
+        return {"ok": True, "state": state}
+
+    return {
+        "ok": False,
+        "error": "use: select 1-4 | set NAME VALUE | query NAME | state",
+    }
+
+
+def main():
+    try:
+        os.unlink(SOCKET_PATH)
+    except FileNotFoundError:
+        pass
+
+    with serial.Serial(
+        SERIAL_DEV,
+        BAUD,
+        bytesize=8,
+        parity=serial.PARITY_NONE,
+        stopbits=1,
+        timeout=0,
+    ) as ser:
+
+        ser.reset_input_buffer()
+
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(SOCKET_PATH)
+        os.chown(SOCKET_PATH, 0, grp.getgrnam("uucp").gr_gid)
+        os.chmod(SOCKET_PATH, 0o660)
+        server.listen(8)
+        server.setblocking(False)
+
+        sel = selectors.DefaultSelector()
+        sel.register(ser.fileno(), selectors.EVENT_READ, "serial")
+        sel.register(server, selectors.EVENT_READ, "server")
+
+        print(f"HKS401 daemon: {SERIAL_DEV} @ {BAUD}", flush=True)
+
+        # Establish a complete initial hardware snapshot.  Queries are
+        # paced to keep responses distinct on the 9600-baud UART.
+        for name in QUERIES:
+            send(ser, QUERIES[name])
+            time.sleep(0.05)
+
+        while True:
+            for key, _ in sel.select(timeout=1.0):
+
+                if key.data == "serial":
+                    data = os.read(ser.fileno(), 256)
+                    if data:
+                        parse_rx(data)
+
+                elif key.data == "server":
+                    conn, _ = server.accept()
+
+                    with conn:
+                        conn.settimeout(1.0)
+
+                        try:
+                            request = conn.recv(1024).decode(
+                                "ascii", errors="replace"
+                            )
+                            result = handle_command(ser, request)
+                        except Exception as ex:
+                            result = {"ok": False, "error": str(ex)}
+
+                        conn.sendall(
+                            (json.dumps(result) + "\n").encode("utf-8")
+                        )
+
+
+if __name__ == "__main__":
+    main()
