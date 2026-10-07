@@ -1,13 +1,41 @@
 #!/bin/bash
+# Runs as kvmd ExecStartPre. Writes only when something is missing or stale,
+# and never edits PiKVM-owned web files.
 set -euo pipefail
 
 PY_SOURCE="/usr/local/lib/hks401/hks401.py"
 CSS_SOURCE="/usr/local/lib/hks401/hks401.css"
 
-WEB_ROOT="/usr/share/kvmd/web"
-CSS_DIR="${WEB_ROOT}/share/css"
-CSS_TARGET="${CSS_DIR}/hks401.css"
-KVM_INDEX="${WEB_ROOT}/kvm/index.html"
+# Official user stylesheet hook: nginx serves it as share/css/user.css.
+USER_CSS="/etc/kvmd/web.css"
+CSS_BEGIN="/* BEGIN hks401 (managed by install-hks401-kvmd-plugin) */"
+CSS_END="/* END hks401 */"
+
+# Earlier revisions patched these PiKVM files; undo if still present.
+LEGACY_CSS="/usr/share/kvmd/web/share/css/hks401.css"
+KVM_INDEX="/usr/share/kvmd/web/kvm/index.html"
+LEGACY_LINK='<link rel="stylesheet" href="../share/css/hks401.css">'
+
+#
+# PiKVM boots with a read-only root; remount only if a write is needed.
+#
+REMOUNTED=0
+
+ensure_rw() {
+    if [[ $REMOUNTED -eq 0 ]] && findmnt -no OPTIONS / | tr ',' '\n' | grep -qx ro; then
+        mount -o remount,rw /
+        REMOUNTED=1
+    fi
+}
+
+restore_ro() {
+    if [[ $REMOUNTED -eq 1 ]]; then
+        sync
+        mount -o remount,ro / || echo "WARNING: could not remount / read-only" >&2
+    fi
+}
+
+trap restore_ro EXIT
 
 #
 # Verify persistent HKS401 sources.
@@ -26,7 +54,7 @@ fi
 # Locate the UGPIO plugin directory for the currently installed KVMD.
 #
 PLUGIN_DIR="$(
-    python - <<'PY'
+    python3 - <<'PY'
 import os
 import kvmd.plugins.ugpio
 print(os.path.dirname(os.path.realpath(kvmd.plugins.ugpio.__file__)))
@@ -50,8 +78,8 @@ if [[ -L "$PLUGIN_TARGET" ]]; then
     else
         echo "Replacing stale HKS401 symlink:"
         echo "  old -> $CURRENT"
-        rm "$PLUGIN_TARGET"
-        ln -s "$PY_SOURCE" "$PLUGIN_TARGET"
+        ensure_rw
+        ln -sfn "$PY_SOURCE" "$PLUGIN_TARGET"
         echo "  new -> $PY_SOURCE"
     fi
 
@@ -64,6 +92,7 @@ elif [[ -e "$PLUGIN_TARGET" ]]; then
     exit 1
 
 else
+    ensure_rw
     ln -s "$PY_SOURCE" "$PLUGIN_TARGET"
     echo "Created HKS401 plugin symlink."
 fi
@@ -71,7 +100,7 @@ fi
 #
 # Verify that the currently installed KVMD can load the plugin.
 #
-python - <<'PY'
+python3 - <<'PY'
 from kvmd.plugins import get_plugin_class
 
 cls = get_plugin_class("ugpio", "hks401")
@@ -82,54 +111,45 @@ print("Module:", cls.__module__)
 PY
 
 #
-# Install/recover HKS401 web stylesheet.
+# Install/refresh the HKS401 block in the user stylesheet, preserving any
+# other user CSS.
 #
-if [[ ! -d "$CSS_DIR" ]]; then
-    echo "ERROR: PiKVM CSS directory not found: $CSS_DIR" >&2
-    exit 1
-fi
+CURRENT_CSS="$(cat "$USER_CSS" 2>/dev/null || true)"
+OTHER_CSS="$(
+    printf '%s\n' "$CURRENT_CSS" \
+        | sed '\|^/\* BEGIN hks401 |,\|^/\* END hks401 \*/$|d'
+)"
+WANTED_CSS="$(
+    [[ -n "$OTHER_CSS" ]] && printf '%s\n\n' "$OTHER_CSS"
+    printf '%s\n' "$CSS_BEGIN"
+    cat "$CSS_SOURCE"
+    printf '%s\n' "$CSS_END"
+)"
 
-if [[ ! -f "$KVM_INDEX" ]]; then
-    echo "ERROR: PiKVM KVM index not found: $KVM_INDEX" >&2
-    exit 1
-fi
-
-install -m 0644 "$CSS_SOURCE" "$CSS_TARGET"
-echo "Installed HKS401 stylesheet: $CSS_TARGET"
-
-#
-# Ensure the KVM page loads our stylesheet.
-#
-CSS_LINK='<link rel="stylesheet" href="../share/css/hks401.css">'
-
-if grep -Fq "$CSS_LINK" "$KVM_INDEX"; then
-    echo "HKS401 stylesheet link already present."
+if [[ "$CURRENT_CSS" == "$WANTED_CSS" ]]; then
+    echo "HKS401 stylesheet block already current."
 else
-    if ! grep -Fq 'href="../share/css/switch.css"' "$KVM_INDEX"; then
-        echo "ERROR: Could not locate switch.css link in $KVM_INDEX" >&2
-        echo "Refusing to modify an unknown PiKVM web layout." >&2
-        exit 1
-    fi
-
-    sed -i \
-        '/href="\.\.\/share\/css\/switch\.css"/a\    <link rel="stylesheet" href="../share/css/hks401.css">' \
-        "$KVM_INDEX"
-
-    echo "Inserted HKS401 stylesheet link."
+    ensure_rw
+    printf '%s\n' "$WANTED_CSS" > "${USER_CSS}.tmp"
+    chmod 0644 "${USER_CSS}.tmp"
+    mv "${USER_CSS}.tmp" "$USER_CSS"
+    echo "Updated HKS401 stylesheet block in $USER_CSS"
 fi
 
 #
-# Final verification.
+# Remove legacy modifications of PiKVM web files.
 #
-cmp -s "$CSS_SOURCE" "$CSS_TARGET" || {
-    echo "ERROR: Installed HKS401 stylesheet does not match source." >&2
-    exit 1
-}
+if [[ -f "$KVM_INDEX" ]] && grep -Fq "$LEGACY_LINK" "$KVM_INDEX"; then
+    ensure_rw
+    sed -i '\|href="\.\./share/css/hks401\.css"|d' "$KVM_INDEX"
+    echo "Removed legacy HKS401 link from $KVM_INDEX"
+fi
 
-grep -Fq "$CSS_LINK" "$KVM_INDEX" || {
-    echo "ERROR: HKS401 stylesheet link verification failed." >&2
-    exit 1
-}
+if [[ -e "$LEGACY_CSS" ]]; then
+    ensure_rw
+    rm -f "$LEGACY_CSS"
+    echo "Removed legacy $LEGACY_CSS"
+fi
 
 echo
 echo "HKS401 KVMD plugin and web UI installation OK."

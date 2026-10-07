@@ -13,12 +13,72 @@ from ...logging import get_logger
 from ...yamlconf import Option
 from ...yamlconf import Section
 
+from ...validators import check_string_in_list
 from ...validators.basic import valid_float_f01
-from ...validators.basic import valid_number
 from ...validators.os import valid_abs_path
 
 from . import BaseUserGpioDriver
 from . import GpioDriverOfflineError
+
+
+# Mutually exclusive pins: pin -> (state key, selected value, daemon command).
+_CHOICE_PINS: Final[dict[str, tuple[str, Any, str]]] = {
+    **{f"pc{n}": ("active_pc", n, f"select {n}") for n in range(1, 5)},
+    **{
+        f"lighting_{m}": ("lighting", m, f"set lighting {m}")
+        for m in ("off", "indicator", "marquee", "breathing")
+    },
+    **{
+        f"fan_{m}": ("fan", m, f"set fan {m}")
+        for m in ("off", "auto", "low", "high")
+    },
+    **{f"audio_pc{n}": ("audio_pc", n, f"set audio pc{n}") for n in range(1, 5)},
+    **{
+        f"km_{m}": ("km_mode", m, f"set km_mode {m}")
+        for m in ("passthrough", "compatible")
+    },
+}
+
+# On/off pins: pin -> daemon setting name.
+_BOOL_PINS: Final[dict[str, str]] = {
+    "autoscan": "autoscan",
+    "buzzer": "buzzer",
+    "mouse": "mouse",
+    "audio_follow": "audio_follow",
+    "auto_detect": "auto_detect",
+    **{f"net_pc{n}": f"network_pc{n}" for n in range(1, 5)},
+}
+
+# Momentary pins for pulse buttons: pin -> daemon command.
+_PULSE_PINS: Final[dict[str, str]] = {
+    "pc_next": "select next",
+    "audio_next": "set audio next",
+}
+
+# Read-only pins for mode: input: pin -> (state key, value).
+_INPUT_PINS: Final[dict[str, tuple[str, Any]]] = {
+    f"net_focus_pc{n}": ("network_focus_pc", n) for n in range(1, 5)
+}
+
+_ALL_PINS: Final[tuple[str, ...]] = (*_CHOICE_PINS, *_BOOL_PINS, *_INPUT_PINS, *_PULSE_PINS)
+
+
+def _valid_pin(arg: Any) -> str:
+    return check_string_in_list(arg, "HKS401 pin", _ALL_PINS)
+
+
+def _read_pin(state: dict, pin: str) -> bool:
+    if pin in _PULSE_PINS:
+        return False
+    if pin in _CHOICE_PINS:
+        (key, value, _) = _CHOICE_PINS[pin]
+        return (state.get(key) == value)
+    if pin in _INPUT_PINS:
+        (key, value) = _INPUT_PINS[pin]
+        return (state.get(key) == value)
+    if pin.startswith("net_"):
+        return bool((state.get("network_ports") or {}).get(pin[4:]))
+    return (state.get(_BOOL_PINS[pin]) == "on")
 
 
 class Plugin(BaseUserGpioDriver):
@@ -36,7 +96,7 @@ class Plugin(BaseUserGpioDriver):
         self.__timeout: Final[float] = c.timeout
         self.__state_poll: Final[float] = c.state_poll
 
-        self.__active: int = -1
+        self.__state: dict = {}
         self.__online: bool = False
         self.__update_notifier = aiotools.AioNotifier()
 
@@ -59,27 +119,14 @@ class Plugin(BaseUserGpioDriver):
 
     @classmethod
     def get_pin_validator(cls) -> Callable[[Any], Any]:
-        return valid_number.mk(
-            min=1,
-            max=4,
-            name="HKS401 channel",
-        )
+        return _valid_pin
 
     async def run(self) -> None:
-        prev_active = -2
-        prev_online = False
+        prev: tuple | None = None
 
         while True:
             try:
-                response = await self.__command("state")
-                state = response["state"]
-
-                active = state.get("active_pc")
-                if active in (1, 2, 3, 4):
-                    self.__active = int(active)
-                else:
-                    self.__active = -1
-
+                self.__state = (await self.__command("state"))["state"]
                 self.__online = True
 
             except Exception as ex:
@@ -89,61 +136,57 @@ class Plugin(BaseUserGpioDriver):
                         tools.efmt(ex),
                     )
 
+                self.__state = {}
                 self.__online = False
-                self.__active = -1
 
-            if (
-                self.__active != prev_active
-                or self.__online != prev_online
-            ):
+            snapshot = (
+                self.__online,
+                *(_read_pin(self.__state, pin) for pin in _ALL_PINS),
+            )
+            if snapshot != prev:
                 self._notifier.notify()
-                prev_active = self.__active
-                prev_online = self.__online
+                prev = snapshot
 
             await self.__update_notifier.wait(self.__state_poll)
 
     async def cleanup(self) -> None:
         self.__online = False
-        self.__active = -1
+        self.__state = {}
 
     async def read(self, pin: str) -> bool:
         if not self.__online:
             raise GpioDriverOfflineError(self)
-
-        return self.__active == int(pin)
+        return _read_pin(self.__state, pin)
 
     async def write(self, pin: str, state: bool) -> None:
-        # PiKVM output channels are switches.  We only need the ON
-        # transition: selecting an inactive PC makes that channel active.
-        # An OFF request for the currently active PC is intentionally ignored.
-        if not state:
-            return
-
-        channel = int(pin)
-        assert 1 <= channel <= 4
+        if pin in _PULSE_PINS:
+            # Pulse sends ON then OFF; act once on the rising edge.
+            if not state:
+                return
+            command = _PULSE_PINS[pin]
+        elif pin in _CHOICE_PINS:
+            # Choices only act on the ON transition; turning the active
+            # choice OFF is ignored and the UI reverts on the next read.
+            if not state:
+                return
+            command = _CHOICE_PINS[pin][2]
+        else:
+            command = f"set {_BOOL_PINS[pin]} {'on' if state else 'off'}"
 
         try:
-            response = await self.__command(f"select {channel}")
-
-            if not response.get("ok"):
-                raise RuntimeError(
-                    response.get("error", "HKS401 selection failed")
-                )
-
-            # Wake the polling loop immediately instead of waiting for the
-            # normal state_poll interval.
-            self.__update_notifier.notify()
-
+            await self.__command(command)
         except Exception as ex:
             get_logger(0).error(
-                "Can't switch HKS401 to PC%d: %s",
-                channel,
+                "Can't apply HKS401 %r: %s",
+                command,
                 tools.efmt(ex),
             )
             self.__online = False
-            self.__active = -1
             self._notifier.notify()
             raise GpioDriverOfflineError(self)
+
+        # Wake the polling loop instead of waiting for state_poll.
+        self.__update_notifier.notify()
 
     async def __command(self, command: str) -> dict:
         writer = None

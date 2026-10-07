@@ -20,12 +20,11 @@ Current functionality includes:
 -   Detect physical HKS401 input changes.
 -   Bidirectionally synchronize HKS401 selection with PiKVM.
 -   Query and decode most useful KVM state.
--   Change buzzer, lighting, Legacy Emulation, Ethernet, mouse, fan,
+-   Change buzzer, lighting, KM mode, Ethernet, mouse, fan,
     audio-follow and audio selection settings.
 -   Start/stop the **real** Auto Scan function.
 -   Query actual Auto Scan runtime state.
--   Keep the separate `0x0F/0x8F` flag distinct because testing shows it
-    is not actual Auto Scan runtime state.
+-   Enable/disable Auto Detect (`0x0F/0x8F`).
 
 ## Hardware and TRRS cable
 
@@ -148,18 +147,24 @@ instead be treated as command-specific until all fields are understood.
 | Monitor/PC correspondence | `AA BB 83 00 FF E7` |
 | Buzzer | `AA BB 84 00 FF E8` |
 | Lighting | `AA BB 85 00 FF E9` |
-| Legacy Emulation | `AA BB 88 00 FF EC` |
+| KM mode (USB keyboard/mouse) | `AA BB 88 00 FF EC` |
 | Ethernet/network | `AA BB 89 00 FF ED` |
 | Mouse | `AA BB 8A 00 FF EE` |
 | Fan | `AA BB 8B 00 FF EF` |
 | Audio Follow | `AA BB 8C 00 FF F0` |
 | Audio selection | `AA BB 8D 00 FF F1` |
 | **Actual Auto Scan runtime** | `AA BB 8E 00 FF F2` |
-| Separate unresolved flag | `AA BB 8F 00 FF F3` |
+| Auto Detect | `AA BB 8F 00 FF F3` |
 
 `0x86` and `0x87` did not respond on the tested HKS401-M24. `0x07/0x87`
 appears associated with a Mixed Mode feature not supported/implemented
 on this unit.
+
+`0x06` (not in TESmart's command sheet) has no observable effect: no
+beep, no reply, no unsolicited frames, no change to any queried setting,
+and no change to Auto Scan dwell. Tested with data
+`00 FF`, `00 00`, `00 01`, `00 03`, `00 05`, `00 0C`, `01 00`, `03 00`,
+`FF 00`.
 
 ## Decoded query state
 
@@ -198,6 +203,8 @@ zero-based PC index.
 0x84 buzzer:
   00 off
   01 on
+  (TESmart lists 02 medium / 03 high; this model ignores them and
+  keeps reporting 01.)
 
 0x85 lighting:
   04 00 off
@@ -205,9 +212,9 @@ zero-based PC index.
   04 02 marquee
   04 03 breathing
 
-0x88 Legacy Emulation:
-  00 off
-  01 on
+0x88 KM mode (USB keyboard/mouse):
+  00 passthrough  (KVM beeps once)
+  01 compatible   (KVM beeps twice)
 
 0x89 Ethernet:
   first byte = four-PC enable mask
@@ -218,7 +225,7 @@ zero-based PC index.
   07 PC4 disabled
   second byte = focus PC, 00..03
 
-0x8A mouse:
+0x8A mouse wheel switching:
   00 off
   01 on
 
@@ -260,11 +267,11 @@ AA BB 05 02 02 6E  # marquee
 AA BB 05 02 03 6F  # breathing
 ```
 
-### Legacy Emulation --- `0x08`
+### KM mode --- `0x08`
 
 ``` text
-AA BB 08 00 00 6D  # off
-AA BB 08 00 01 6E  # on
+AA BB 08 00 00 6D  # passthrough
+AA BB 08 00 01 6E  # compatible
 ```
 
 ### Ethernet/network --- `0x09`
@@ -345,7 +352,7 @@ set autoscan off
 query autoscan
 ```
 
-### Scan interval --- still under investigation
+### Scan interval --- not settable via `0x0E`
 
 The physical keyboard supports:
 
@@ -361,45 +368,55 @@ The default documented interval is 5 seconds.
 Changing the period with the keyboard visibly changes the dwell time but
 produces **no UART traffic**.
 
-Experiments show that nonstandard `0x0E` data values can also start Auto
-Scan and may affect the period. For example:
+Controlled timing tests (dwell measured by polling `0x82` every 100 ms,
+three dwells per run) show the `0x0E` data bytes do **not** set the
+period:
+
+| Frame | `0x8E` reply | Dwell |
+| --- | --- | --- |
+| `0E 00 01` | `01` | 10.03-10.07 s |
+| `0E 00 02/03/05/0A` | echoes `02/03/05/0a` | 10.05-10.08 s |
+| `0E 01/02/05/0A 01` | `01` | 10.05-10.07 s |
+
+-   Second byte: any nonzero value starts Auto Scan and is echoed by
+    `0x8E`; it has no timing effect.
+-   First byte: ignored.
+-   The period is held internally (10 s on the tested unit after
+    keyboard adjustment) and is neither set nor reported over UART.
+-   Each Right-Ctrl, Right-Ctrl, `-` press shortened the dwell by 1 s
+    (10 s -> 8 s after two presses). Replies to every query `0x81`-`0x9F`
+    were byte-identical before and after, and `0x86`, `0x87`,
+    `0x90`-`0x9F` do not reply, so no known query exposes the period.
+-   Only ports with an active source are visited (PC1 <-> PC2 in the
+    test).
+
+### `0x0F/0x8F` is Auto Detect
 
 ``` text
-AA BB 0E 00 0A 7D
+AA BB 0F 00 01 75  # enable Auto Detect
+AA BB 0F 00 00 74  # disable Auto Detect
+AA BB 8F 00 FF F3  # query
+AA BB 8F 01 00 F5  # reply: off
+AA BB 8F 01 01 F6  # reply: on
 ```
 
-started scanning and appeared to use a longer interval.
+With Auto Detect on, a newly connected source is detected and the
+buzzer sounds; with it off, connections are ignored. It does not start
+or stop Auto Scan.
 
-This layout also caused Auto Scan to start:
-
-``` text
-AA BB 0E 0A 01 7E
-```
-
-Therefore the exact `0x0E` field encoding is **not yet confirmed**.
-These observations should not be treated as a documented scan-period API
-until controlled timing tests isolate the parameter.
-
-### `0x0F/0x8F` is separate
-
-These frames:
-
-``` text
-AA BB 0F 00 00 74
-AA BB 0F 00 01 75
-AA BB 8F 00 FF F3
-```
-
-control/report a flag, but changing it does not start or stop actual
-Auto Scan.
+Measured query round trip (write start to full reply) is ~17 ms:
+~6.3 ms per 6-byte frame on the wire plus ~4 ms KVM processing. No
+replies were dropped in testing, including queries sent immediately
+after a set or back-to-back. The daemon still retries readbacks (first
+after 20 ms, then every 100 ms, up to 3 attempts) in case a frame is
+lost. A sniffer sees nothing if `hks401d` is running, because the
+daemon consumes the reply.
 
 The daemon calls this:
 
 ``` text
-autoscan_uart_flag
+auto_detect
 ```
-
-Its real purpose remains unresolved.
 
 ## Unsolicited state frames
 
@@ -524,7 +541,7 @@ Example decoded state:
   },
   "buzzer": "on",
   "lighting": "breathing",
-  "legacy_emulation": "off",
+  "km_mode": "compatible",
   "network_mask": "0x0f",
   "network_ports": {
     "pc1": true,
@@ -538,7 +555,7 @@ Example decoded state:
   "audio_follow": "on",
   "audio_pc": 1,
   "autoscan": "off",
-  "autoscan_uart_flag": "off"
+  "auto_detect": "off"
 }
 ```
 
@@ -560,10 +577,28 @@ The plugin:
 
 -   Talks to `hks401d`, never directly to UART.
 -   Polls daemon state.
--   Exposes PC1-PC4 as PiKVM UGPIO outputs.
--   Reports a PC output active when `active_pc` equals that pin.
--   Sends selection only when an output is switched ON.
+-   Exposes named UGPIO pins:
+
+| Pins | Type | Daemon command |
+| --- | --- | --- |
+| `pc1`-`pc4` | choice | `select N` |
+| `km_passthrough`, `km_compatible` | choice | `set km_mode MODE` |
+| `lighting_off/indicator/marquee/breathing` | choice | `set lighting MODE` |
+| `fan_off/auto/low/high` | choice | `set fan MODE` |
+| `audio_pc1`-`audio_pc4` | choice | `set audio pcN` |
+| `autoscan`, `buzzer`, `mouse` (mouse wheel switching), `audio_follow`, `auto_detect` | on/off | `set NAME on/off` |
+| `net_pc1`-`net_pc4` | on/off | `set network_pcN on/off` |
+| `pc_next`, `audio_next` | pulse | `select next`, `set audio next` |
+| `net_focus_pc1`-`net_focus_pc4` | input | — (0x89 focus PC) |
+
+-   Choice pins act only on the ON transition; turning the active
+    choice OFF is ignored.
 -   Notifies PiKVM when state changes.
+
+The daemon builds the Ethernet `0x09` frame from the current mask, so
+each PC can be toggled independently (`set network_mask 0xNN` sets the
+whole mask). Only the all-on and single-PC-off masks have been verified
+on hardware.
 
 This provides bidirectional synchronization:
 
@@ -605,6 +640,26 @@ ExecStartPre=+/usr/local/sbin/install-hks401-kvmd-plugin
 to restore the plugin symlink when needed. This recovery mechanism has
 been tested by removing the installed link and confirming that it is
 recreated.
+
+No PiKVM-owned files are edited:
+
+-   UGPIO config lives in `/etc/kvmd/override.d/hks401.yaml`, not in
+    `override.yaml`.
+-   UI styling is a marked block in `/etc/kvmd/web.css`, which PiKVM
+    serves as `share/css/user.css`. Other user CSS in that file is
+    preserved.
+-   The only file added inside the KVMD package tree is the plugin
+    symlink, which KVMD's plugin loader requires.
+-   The helper only writes when something is missing or stale, and
+    temporarily remounts the read-only root when it must.
+
+### Deploying from this repo
+
+Edit files in this repo, then deploy:
+
+``` bash
+sudo bash /home/pikvm-hks401/deploy.sh
+```
 
 ## Raw UART testing
 
@@ -669,17 +724,15 @@ Do **not** run a raw UART reader and `hks401d` simultaneously.
 -   Real Auto Scan runtime is reported by `0x8E`.
 -   Automatic scan transitions are UART-silent.
 -   Keyboard scan-period changes are UART-silent.
--   `0x0F/0x8F` is independent of actual Auto Scan.
+-   `0x0F/0x8F` is Auto Detect, independent of actual Auto Scan.
 -   LAN jack is an internal network switch/uplink, not the HKS401
     management interface.
 -   PiKVM PC-selection integration works bidirectionally.
 
 ### Still being investigated
 
--   Exact `0x0E` encoding of Auto Scan dwell/period.
--   Whether scan period has a dedicated query.
--   Actual purpose of `0x0F/0x8F`.
--   `0x06/0x86`.
+-   Whether any undocumented command sets or reports the scan period
+    (`0x0E` data bytes and `0x06` do not).
 -   `0x07/0x87`/Mixed Mode behavior on other models.
 -   Conditional `0x82/0x83` polling during Auto Scan.
 -   Additional PiKVM UI controls and status indicators.

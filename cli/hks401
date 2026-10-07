@@ -9,27 +9,35 @@ SOCKET = "/run/hks401d.sock"
 QUERIES = (
     "ports",
     "focus",
-    "mapping",
+    "correspondence",
     "buzzer",
     "lighting",
-    "mixed_focus",
-    "usb_compat",
+    "km_mode",
     "network",
     "mouse",
     "fan",
     "audio_follow",
     "audio",
     "autoscan",
+    "auto_detect",
 )
 
 def usage():
     print(
         f"Usage: {sys.argv[0]} "
-        "{1|2|3|4|state|query <name>}",
+        "{1|2|3|4|next|state|query <name>|set <name> <value>}",
         file=sys.stderr,
     )
     print(
         "Query names: " + ", ".join(QUERIES),
+        file=sys.stderr,
+    )
+    print(
+        "Set examples: buzzer on|off, "
+        "km_mode passthrough|compatible, "
+        "lighting off|indicator|marquee|breathing, "
+        "fan off|auto|low|high, audio pc1-pc4|next, "
+        "network_pc1-4 on|off, network_mask 0x00-0x0f",
         file=sys.stderr,
     )
 
@@ -37,7 +45,7 @@ def usage():
 if len(sys.argv) == 2:
     arg = sys.argv[1]
 
-    if arg in ("1", "2", "3", "4"):
+    if arg in ("1", "2", "3", "4", "next"):
         command = f"select {arg}\n"
         mode = "select"
 
@@ -60,6 +68,10 @@ elif len(sys.argv) == 3 and sys.argv[1] == "query":
     command = f"query {name}\n"
     mode = "query"
 
+elif len(sys.argv) == 4 and sys.argv[1] == "set":
+    command = f"set {sys.argv[2]} {sys.argv[3]}\n"
+    mode = "set"
+
 else:
     usage()
     sys.exit(2)
@@ -69,7 +81,12 @@ try:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
         s.connect(SOCKET)
         s.sendall(command.encode())
-        data = s.recv(4096)
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
 
     result = json.loads(data)
 
@@ -83,7 +100,7 @@ try:
     if mode == "state":
         print(json.dumps(result["state"], indent=2))
 
-    elif mode == "query":
+    elif mode in ("query", "set"):
         print(json.dumps(result, indent=2))
 
 except Exception as ex:
