@@ -33,6 +33,15 @@ if grep -q hks401 /etc/kvmd/override.yaml; then
     echo "         Remove them (backup: /etc/kvmd/override.yaml.pre-hks401-driver)." >&2
 fi
 
+# Keep the serial login service from competing with hks401d for ttyAMA0.
+# systemd-getty-generator can request it because PiKVM boots with
+# console=ttyAMA0; masking takes precedence without editing /boot/cmdline.
+systemctl mask --now serial-getty@ttyAMA0.service
+if [[ "$(systemctl is-enabled serial-getty@ttyAMA0.service)" != "masked" ]]; then
+    echo "ERROR: serial getty is not masked" >&2
+    exit 1
+fi
+
 systemctl daemon-reload
 systemctl restart hks401d
 # kvmd's ExecStartPre runs install-hks401-kvmd-plugin.
