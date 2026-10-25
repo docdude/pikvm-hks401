@@ -20,6 +20,7 @@ QUERIES = (
     "audio",
     "autoscan",
     "auto_detect",
+    "scan_interval",
 )
 
 def usage():
@@ -37,7 +38,8 @@ def usage():
         "km_mode passthrough|compatible, "
         "lighting off|indicator|marquee|breathing, "
         "fan off|auto|low|high, audio pc1-pc4|next, "
-        "network_pc1-4 on|off, network_mask 0x00-0x0f",
+        "network_pc1-4 on|off, network_mask 0x00-0x0f, "
+        "scan_interval 5-3600 (needs updated firmware)",
         file=sys.stderr,
     )
 

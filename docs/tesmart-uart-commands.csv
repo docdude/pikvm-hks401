@@ -52,6 +52,7 @@ No.,Function description,Control code,Whether a response code exists,Response co
 48,Switch audio channel to the next port,AA BB 0D FF 00 71,NO,,Cannot switch in audio follow mode,
 49,Enable auto scan,AA BB 0F 00 01 75,NO,,,
 50,Disable auto scan,AA BB 0F 00 00 74,NO,,,
+51,Set auto scan interval 5-3600 s (no response),AA BB 10 00 HH LL CC,NO,,,Requires TESmart firmware update (in testing); 5 s = AA BB 10 00 00 05 7A
 Query command requires response code,,,,,,
 1,Sync monitor count per port,AA BB 81 00 00 E6,YES,"HKS203-P24/HDK203-M24/HDC203-M24: AA BB 81 01 23 0A
 HKS202M24/HDK202M24: AA BB 81 01 22 09
@@ -72,3 +73,4 @@ Buzzer high level: AA BB 84 01 03 ED",,
 12,Query audio channel status,AA BB 8D 00 FF F1,YES,"Example: current audio channel set to PC2: AA BB 8D 01 01 F4",,
 13,Query auto scan status,AA BB 8F 00 FF F3,YES,"Auto scan status: On: AA BB 8F 01 01 F6
 Off: AA BB 8F 01 00 F5",,
+14,Query auto scan interval (5-3600 s),AA BB 90 00 FF F4,YES,"Interval 5 s: AA BB 90 02 00 05 FC",,Requires TESmart firmware update (in testing)

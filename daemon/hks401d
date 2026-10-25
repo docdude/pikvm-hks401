@@ -3,6 +3,7 @@
 import json
 import os
 import grp
+import http.client
 import selectors
 import serial
 import socket
@@ -12,6 +13,19 @@ SERIAL_DEV = "/dev/ttyAMA0"
 BAUD = 9600
 SOCKET_PATH = "/run/hks401d.sock"
 STATE_PATH = "/run/hks401d-state.json"
+
+# Two-way link between HKS401 PC1-PC4 and PiKVM Switch ports 1-4 (API
+# ports 0-3). Root is a kvmd unix-socket "kvmd_user", so no credentials.
+# Set HKS401_SWITCH_LINK=0 in the unit environment to disable.
+SWITCH_LINK = os.environ.get("HKS401_SWITCH_LINK", "1") != "0"
+KVMD_SOCKET = "/run/kvmd/kvmd.sock"
+KVMD_TIMEOUT = 0.5
+SWITCH_POLL = 0.5
+SWITCH_RETRY = 5.0
+# How long to wait for the Switch to confirm a port we commanded, and for
+# the HKS401 to settle after a Switch-initiated selection, before either
+# side may drive the other again. Prevents ping-pong on stale reports.
+SWITCH_HOLD = 2.0
 
 SELECT = {
     1: bytes.fromhex("AA BB 03 00 00 68"),
@@ -86,6 +100,10 @@ QUERIES = {
     # Actual Auto Scan runtime status: 00=stopped, 01=running.
     "autoscan":           bytes.fromhex("AA BB 8E 00 FF F2"),
     "auto_detect":        bytes.fromhex("AA BB 8F 00 FF F3"),
+    # Query Auto Scan interval (seconds). Only the firmware that TESmart is
+    # preparing replies to this; on stock units it stays silent (logged as
+    # NO REPLY) until that firmware is flashed.
+    "scan_interval":      bytes.fromhex("AA BB 90 00 FF F4"),
 }
 
 
@@ -112,6 +130,8 @@ state = {
     "audio_pc": None,
     "autoscan": None,
     "auto_detect": None,
+    "scan_interval": None,
+    "switch_port": None,
     "responses": {},
     "last_frame": None,
     "last_update": None,
@@ -128,6 +148,14 @@ READBACK_ATTEMPTS = 3
 
 # Query name -> (monotonic time of next send, attempts left).
 readbacks = {}
+
+# Auto Scan PC transitions are UART-silent, so poll focus while it runs.
+# The rate is independent of the scan interval, which the keyboard can
+# change without UART traffic. 0x8E is re-checked to notice a stop.
+AUTOSCAN_FOCUS_POLL = 1.0
+AUTOSCAN_STATUS_POLL = 5.0
+
+autoscan_polls = {"focus": 0.0, "autoscan": 0.0}
 
 
 def request_readback(name, delay=READBACK_DELAY):
@@ -147,6 +175,102 @@ def service_readbacks(ser):
         readbacks[name] = (now + READBACK_RETRY, left - 1)
         # Keep consecutive frames apart on the 9600-baud link.
         time.sleep(0.05)
+
+
+def service_autoscan(ser):
+    if state["autoscan"] != "on":
+        return
+    now = time.monotonic()
+    for name, period in (
+        ("focus", AUTOSCAN_FOCUS_POLL),
+        ("autoscan", AUTOSCAN_STATUS_POLL),
+    ):
+        if now >= autoscan_polls[name] and name not in readbacks:
+            request_readback(name, 0)
+            autoscan_polls[name] = now + period
+
+
+class _KvmdConnection(http.client.HTTPConnection):
+    def __init__(self):
+        super().__init__("localhost", timeout=KVMD_TIMEOUT)
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(KVMD_SOCKET)
+
+
+def kvmd_request(method, path):
+    conn = _KvmdConnection()
+    try:
+        conn.request(method, path)
+        response = json.loads(conn.getresponse().read())
+    finally:
+        conn.close()
+    if not response.get("ok"):
+        raise RuntimeError(f"kvmd {method} {path}: {response.get('result')}")
+    return response["result"]
+
+
+# next_poll: monotonic time of the next GET /switch.
+# hold_until: no propagation in either direction before this time.
+# expect_port: port we commanded and are waiting for the Switch to report.
+switch_link = {"next_poll": 0.0, "hold_until": 0.0, "expect_port": None, "online": False}
+
+
+def service_switch_link(ser):
+    if not SWITCH_LINK:
+        return
+    now = time.monotonic()
+
+    if now >= switch_link["next_poll"]:
+        try:
+            port = kvmd_request("GET", "/switch")["summary"]["active_port"]
+        except Exception as ex:
+            if switch_link["online"]:
+                print(f"SWITCH link offline: {ex}", flush=True)
+            switch_link["online"] = False
+            switch_link["next_poll"] = now + SWITCH_RETRY
+            return
+        if not switch_link["online"]:
+            print("SWITCH link online", flush=True)
+            switch_link["online"] = True
+        switch_link["next_poll"] = now + SWITCH_POLL
+        port = int(port) if 0 <= port <= 3 else None
+        prev = state["switch_port"]
+        state["switch_port"] = port
+
+        expect = switch_link["expect_port"]
+        if expect is not None:
+            if port == expect or now >= switch_link["hold_until"]:
+                switch_link["expect_port"] = None
+            return
+
+        # A change we didn't command: someone used the PiKVM Switch.
+        if (
+            prev is not None and port is not None and port != prev
+            and now >= switch_link["hold_until"]
+            and state["active_pc"] != port + 1
+        ):
+            print(f"SWITCH port {port + 1} -> HKS401 PC{port + 1}", flush=True)
+            select_pc(ser, port + 1)
+            switch_link["hold_until"] = now + SWITCH_HOLD
+            return
+
+    pc = state["active_pc"]
+    port = state["switch_port"]
+    if (
+        switch_link["online"] and pc is not None and port is not None
+        and port != pc - 1 and now >= switch_link["hold_until"]
+    ):
+        print(f"HKS401 PC{pc} -> SWITCH port {pc}", flush=True)
+        try:
+            kvmd_request("POST", f"/switch/set_active?port={pc - 1}")
+        except Exception as ex:
+            print(f"SWITCH set_active failed: {ex}", flush=True)
+            switch_link["next_poll"] = now + SWITCH_RETRY
+        switch_link["expect_port"] = pc - 1
+        switch_link["hold_until"] = now + SWITCH_HOLD
 
 
 def make_frame(cmd, *data):
@@ -183,7 +307,12 @@ def process_frame(frame):
     query_name = QUERY_NAMES_BY_CMD.get(cmd)
     if query_name is not None:
         state["responses"][query_name] = payload.hex(" ")
-        readbacks.pop(query_name, None)
+        solicited = readbacks.pop(query_name, None) is not None
+
+        # Unsolicited 0x82/0x83 snapshots accompany physical switching and
+        # keyboard Auto Scan start/stop, which 0x8E doesn't announce.
+        if cmd in (0x82, 0x83) and not solicited:
+            request_readback("autoscan", 0)
 
     # 0x81: documented number of PCs and monitors.  On this M24,
     # payload 0x41 corresponds to 4 PCs / 1 monitor.
@@ -202,6 +331,8 @@ def process_frame(frame):
         # Follow, audio_pc.
         if pc != state["focus_pc"]:
             request_readback("network", 0)
+            if state["autoscan"] == "on" and "correspondence" not in readbacks:
+                request_readback("correspondence", 0)
             if state["audio_follow"] == "on":
                 request_readback("audio", 0)
         state["focus_pc"] = pc
@@ -261,6 +392,10 @@ def process_frame(frame):
     # 0x8F: Auto Detect, 00=off, 01=on.
     elif cmd == 0x8F and length >= 1 and payload[0] in (0, 1):
         state["auto_detect"] = "on" if payload[0] else "off"
+
+    # 0x90: Auto Scan interval, big-endian seconds (firmware-updated units).
+    elif cmd == 0x90 and length >= 2:
+        state["scan_interval"] = (payload[0] << 8) | payload[1]
 
     save_state()
 
@@ -354,6 +489,40 @@ def set_network(ser, name, value):
     return {"ok": True, "setting": name, "value": value, "mask": f"0x{mask:02x}"}
 
 
+def set_scan_interval(ser, value):
+    # Set Auto Scan interval: AA BB 10 00 HH LL CC (no response frame).
+    # Range is 5-3600 seconds, high byte first. Requires the firmware that
+    # TESmart is preparing; harmless (silent) on stock units.
+    try:
+        seconds = int(value)
+    except ValueError:
+        return {"ok": False, "error": "interval must be an integer (seconds)"}
+
+    if not 5 <= seconds <= 3600:
+        return {"ok": False, "error": "interval must be 5-3600 seconds"}
+
+    send(ser, make_frame(0x10, 0x00, (seconds >> 8) & 0xFF, seconds & 0xFF))
+
+    # The 0x10 set is fire-and-forget, so assume success until the 0x90
+    # readback below confirms the value (silent on pre-update firmware).
+    state["scan_interval"] = seconds
+    save_state()
+
+    request_readback("scan_interval")
+
+    return {"ok": True, "setting": "scan_interval", "value": seconds}
+
+
+def select_pc(ser, pc):
+    send(ser, SELECT[pc])
+    state["active_pc"] = pc
+    save_state()
+    # UART-initiated switching does not generate the unsolicited
+    # 0x82/0x83 notifications produced by physical switching.
+    request_readback("focus")
+    request_readback("correspondence")
+
+
 def handle_command(ser, text):
     parts = text.strip().lower().split()
 
@@ -363,29 +532,26 @@ def handle_command(ser, text):
     if parts[0] == "select" and len(parts) == 2:
         if parts[1] == "next":
             send(ser, SELECT_NEXT)
-            pc = "next"
-        else:
-            try:
-                pc = int(parts[1])
-            except ValueError:
-                return {"ok": False, "error": "invalid PC"}
+            request_readback("focus")
+            request_readback("correspondence")
+            return {"ok": True, "selected": "next"}
 
-            if pc not in SELECT:
-                return {"ok": False, "error": "PC must be 1-4 or next"}
+        try:
+            pc = int(parts[1])
+        except ValueError:
+            return {"ok": False, "error": "invalid PC"}
 
-            send(ser, SELECT[pc])
-            state["active_pc"] = pc
-            save_state()
+        if pc not in SELECT:
+            return {"ok": False, "error": "PC must be 1-4 or next"}
 
-        # UART-initiated switching does not generate the unsolicited
-        # 0x82/0x83 notifications produced by physical switching.
-        request_readback("focus")
-        request_readback("correspondence")
-
+        select_pc(ser, pc)
         return {"ok": True, "selected": pc}
 
     if parts[0] == "set" and len(parts) == 3 and parts[1].startswith("network_"):
         return set_network(ser, parts[1], parts[2])
+
+    if parts[0] == "set" and len(parts) == 3 and parts[1] == "scan_interval":
+        return set_scan_interval(ser, parts[2])
 
     if parts[0] == "set" and len(parts) == 3:
         key = (parts[1], parts[2])
@@ -473,7 +639,16 @@ def main():
             request_readback(name, 0)
 
         while True:
-            for key, _ in sel.select(timeout=(0.05 if readbacks else 1.0)):
+            if readbacks:
+                timeout = 0.05
+            elif state["autoscan"] == "on":
+                timeout = 0.25
+            elif SWITCH_LINK:
+                timeout = SWITCH_POLL
+            else:
+                timeout = 1.0
+
+            for key, _ in sel.select(timeout=timeout):
 
                 if key.data == "serial":
                     data = os.read(ser.fileno(), 256)
@@ -498,6 +673,8 @@ def main():
                             (json.dumps(result) + "\n").encode("utf-8")
                         )
 
+            service_autoscan(ser)
+            service_switch_link(ser)
             service_readbacks(ser)
 
 

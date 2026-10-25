@@ -441,9 +441,12 @@ frames**. `Esc` produces another ordinary snapshot.
 Explicit `0x82` and `0x83` queries during Auto Scan correctly return the
 current PC, and `0x8E` correctly reports whether scanning is active.
 
-The planned daemon strategy is therefore to poll `0x82/0x83` at a modest
-rate **only while Auto Scan is active**, rather than continuously
-polling the entire KVM.
+The daemon therefore polls `0x82` once a second (and re-checks `0x8E`
+every 5 seconds) **only while Auto Scan is active**, rather than
+continuously polling the entire KVM. The PiKVM PC buttons, Ethernet focus
+outline and Audio Follow selection follow each scan step within about a
+second. Any unsolicited `0x82`/`0x83` snapshot triggers a `0x8E` query, so
+Auto Scan started or stopped from the keyboard is tracked as well.
 
 The daemon must not depend on the nominal five-second scan interval
 because a keyboard user can change it locally without producing UART
@@ -555,7 +558,8 @@ Example decoded state:
   "audio_follow": "on",
   "audio_pc": 1,
   "autoscan": "off",
-  "auto_detect": "off"
+  "auto_detect": "off",
+  "switch_port": 0
 }
 ```
 
@@ -618,6 +622,33 @@ PiKVM UI
         -> hks401d
         -> UART
         -> HKS401
+```
+
+### PiKVM Switch link
+
+When a PiKVM Switch is attached (used here for ATX control only; video
+comes from the HKS401), `hks401d` keeps the two in step: HKS401 PC1-PC4
+corresponds to Switch ports 1-4 (API ports `0`-`3`).
+
+-   HKS401 changes (UI buttons, Next PC, front panel, keyboard hotkeys,
+    Auto Scan steps) move the Switch via `POST /switch/set_active`.
+-   Selecting a Switch port in the PiKVM UI selects the matching HKS401
+    PC.
+-   The daemon polls `GET /switch` every 0.5 s over
+    `/run/kvmd/kvmd.sock`. Root is a kvmd `kvmd_users` unix-socket user,
+    so no credentials are stored.
+-   After either side is driven, the other is ignored for up to 2 s
+    until it confirms, so stale reports cannot cause ping-pong.
+-   Ports beyond 4 (chained Switch units) are ignored. If kvmd is down
+    the link retries every 5 s; `switch_port` in the daemon state shows
+    the last known port.
+
+Disable it with a drop-in:
+
+``` ini
+# /etc/systemd/system/hks401d.service.d/no-switch-link.conf
+[Service]
+Environment=HKS401_SWITCH_LINK=0
 ```
 
 ### Surviving PiKVM updates
@@ -728,13 +759,14 @@ Do **not** run a raw UART reader and `hks401d` simultaneously.
 -   LAN jack is an internal network switch/uplink, not the HKS401
     management interface.
 -   PiKVM PC-selection integration works bidirectionally.
+-   PiKVM UI follows Auto Scan via conditional `0x82` polling.
+-   Two-way PC selection link with the PiKVM Switch.
 
 ### Still being investigated
 
 -   Whether any undocumented command sets or reports the scan period
     (`0x0E` data bytes and `0x06` do not).
 -   `0x07/0x87`/Mixed Mode behavior on other models.
--   Conditional `0x82/0x83` polling during Auto Scan.
 -   Additional PiKVM UI controls and status indicators.
 
 ## Disclaimer
