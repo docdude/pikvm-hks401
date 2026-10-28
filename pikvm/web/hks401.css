@@ -11,7 +11,8 @@ div.switch-box:has(> input:is(
     [class*="__gpio-switch-hks401_fan_"],
     [class*="__gpio-switch-hks401_audio_pc"],
     [class*="__gpio-switch-hks401_net_pc"],
-    [class*="__gpio-switch-hks401_km_"]
+    [class*="__gpio-switch-hks401_km_"],
+    [class*="__gpio-switch-hks401_scan_"]
 )) {
     width: 72px;
     margin: 3px;
@@ -95,6 +96,12 @@ div.switch-box:has(> input.__gpio-switch-hks401_fan_high) { --hks401-text: "High
 
 div.switch-box:has(> input.__gpio-switch-hks401_km_passthrough) { --hks401-text: "Passthru"; }
 div.switch-box:has(> input.__gpio-switch-hks401_km_compatible)  { --hks401-text: "Compat"; }
+
+div.switch-box:has(> input.__gpio-switch-hks401_scan_5)  { --hks401-text: "5 s"; }
+div.switch-box:has(> input.__gpio-switch-hks401_scan_10) { --hks401-text: "10 s"; }
+div.switch-box:has(> input.__gpio-switch-hks401_scan_15) { --hks401-text: "15 s"; }
+div.switch-box:has(> input.__gpio-switch-hks401_scan_30) { --hks401-text: "30 s"; }
+div.switch-box:has(> input.__gpio-switch-hks401_scan_60) { --hks401-text: "60 s"; }
 
 
 /* Row labels (#Lighting, #Fan, ...) in HKS401 tables. */

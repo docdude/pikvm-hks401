@@ -155,7 +155,10 @@ readbacks = {}
 AUTOSCAN_FOCUS_POLL = 1.0
 AUTOSCAN_STATUS_POLL = 5.0
 
-autoscan_polls = {"focus": 0.0, "autoscan": 0.0}
+autoscan_polls = {"focus": 0.0, "autoscan": 0.0, "scan_interval": 0.0}
+
+# Cycle for "set scan_interval next"; matches the PiKVM UI presets.
+SCAN_PRESETS = (5, 10, 15, 30, 60)
 
 
 def request_readback(name, delay=READBACK_DELAY):
@@ -181,10 +184,15 @@ def service_autoscan(ser):
     if state["autoscan"] != "on":
         return
     now = time.monotonic()
-    for name, period in (
+    polls = [
         ("focus", AUTOSCAN_FOCUS_POLL),
         ("autoscan", AUTOSCAN_STATUS_POLL),
-    ):
+    ]
+    # Keyboard interval changes are UART-silent. Only firmware that has
+    # answered 0x90 is polled, so stock units don't log NO REPLY.
+    if "scan_interval" in state["responses"]:
+        polls.append(("scan_interval", AUTOSCAN_STATUS_POLL))
+    for name, period in polls:
         if now >= autoscan_polls[name] and name not in readbacks:
             request_readback(name, 0)
             autoscan_polls[name] = now + period
@@ -491,8 +499,15 @@ def set_network(ser, name, value):
 
 def set_scan_interval(ser, value):
     # Set Auto Scan interval: AA BB 10 00 HH LL CC (no response frame).
-    # Range is 5-3600 seconds, high byte first. Requires the firmware that
-    # TESmart is preparing; harmless (silent) on stock units.
+    # Range is 5-3600 seconds, high byte first. Requires updated TESmart
+    # firmware; harmless (silent) on stock units.
+    if value == "next":
+        current = state["scan_interval"]
+        if current is None:
+            return {"ok": False, "error": "scan interval unknown"}
+        # Next preset above the current value, rolling over to the first.
+        value = str(next((p for p in SCAN_PRESETS if p > current), SCAN_PRESETS[0]))
+
     try:
         seconds = int(value)
     except ValueError:

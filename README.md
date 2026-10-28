@@ -390,6 +390,37 @@ period:
 -   Only ports with an active source are visited (PC1 <-> PC2 in the
     test).
 
+### Scan interval --- `0x10`/`0x90` (updated firmware)
+
+TESmart supplied updated HKS401 firmware that makes the interval
+settable and readable over UART:
+
+``` text
+AA BB 10 00 HH LL CC   # set interval, HH LL = seconds (5-3600), big-endian; no reply
+AA BB 90 00 FF F4      # query interval
+AA BB 90 02 HH LL CC   # reply, e.g. AA BB 90 02 00 0A 01 = 10 s
+```
+
+Verified on hardware: 5, 8, 10, 15, 20, 30, 60 and 300 s all read back
+via `0x90`, and timed scans dwelled exactly 10.0 s at a 10 s setting.
+Stock firmware ignores both frames.
+
+``` text
+hks401 query scan_interval
+hks401 set scan_interval 30        # 5-3600, validated before sending
+hks401 set scan_interval next     # cycle 5 -> 10 -> 15 -> 30 -> 60 -> 5 s
+```
+
+`next` moves to the next preset above the current value and rolls over
+from 60 s to 5 s (a custom value such as 20 s goes to 30 s).
+Because keyboard changes are UART-silent, the daemon re-reads `0x90`
+every 5 s while Auto Scan runs, but only once the unit has answered a
+`0x90` query, so stock firmware isn't polled.
+
+In the PiKVM UI the **Auto Scan Interval** row has 5/10/15/30/60 s
+preset buttons (the current one is green; none is lit for a custom
+value) and a **Next** button that cycles through them.
+
 ### `0x0F/0x8F` is Auto Detect
 
 ``` text
@@ -559,6 +590,7 @@ Example decoded state:
   "audio_pc": 1,
   "autoscan": "off",
   "auto_detect": "off",
+  "scan_interval": 8,
   "switch_port": 0
 }
 ```
@@ -593,6 +625,8 @@ The plugin:
 | `autoscan`, `buzzer`, `mouse` (mouse wheel switching), `audio_follow`, `auto_detect` | on/off | `set NAME on/off` |
 | `net_pc1`-`net_pc4` | on/off | `set network_pcN on/off` |
 | `pc_next`, `audio_next` | pulse | `select next`, `set audio next` |
+| `scan_5`, `scan_10`, `scan_15`, `scan_30`, `scan_60` | choice | `set scan_interval N` |
+| `scan_next` | pulse | `set scan_interval next` |
 | `net_focus_pc1`-`net_focus_pc4` | input | — (0x89 focus PC) |
 
 -   Choice pins act only on the ON transition; turning the active
@@ -755,6 +789,7 @@ Do **not** run a raw UART reader and `hks401d` simultaneously.
 -   Real Auto Scan runtime is reported by `0x8E`.
 -   Automatic scan transitions are UART-silent.
 -   Keyboard scan-period changes are UART-silent.
+-   Scan interval set/query via `0x10`/`0x90` on updated firmware.
 -   `0x0F/0x8F` is Auto Detect, independent of actual Auto Scan.
 -   LAN jack is an internal network switch/uplink, not the HKS401
     management interface.
@@ -764,8 +799,6 @@ Do **not** run a raw UART reader and `hks401d` simultaneously.
 
 ### Still being investigated
 
--   Whether any undocumented command sets or reports the scan period
-    (`0x0E` data bytes and `0x06` do not).
 -   `0x07/0x87`/Mixed Mode behavior on other models.
 -   Additional PiKVM UI controls and status indicators.
 

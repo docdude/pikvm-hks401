@@ -94,9 +94,17 @@ kvmd:
             hks401_net_pc3: {driver: hks401, pin: net_pc3, mode: output, switch: true, pulse: {delay: 0}}
             hks401_net_pc4: {driver: hks401, pin: net_pc4, mode: output, switch: true, pulse: {delay: 0}}
 
+            # Auto Scan interval presets (needs updated TESmart firmware).
+            hks401_scan_5:  {driver: hks401, pin: scan_5,  mode: output, switch: true, pulse: {delay: 0}}
+            hks401_scan_10: {driver: hks401, pin: scan_10, mode: output, switch: true, pulse: {delay: 0}}
+            hks401_scan_15: {driver: hks401, pin: scan_15, mode: output, switch: true, pulse: {delay: 0}}
+            hks401_scan_30: {driver: hks401, pin: scan_30, mode: output, switch: true, pulse: {delay: 0}}
+            hks401_scan_60: {driver: hks401, pin: scan_60, mode: output, switch: true, pulse: {delay: 0}}
+
             # Momentary "next" buttons.
             hks401_pc_next:    {driver: hks401, pin: pc_next,    mode: output, switch: false, pulse: {delay: 0.1}}
             hks401_audio_next: {driver: hks401, pin: audio_next, mode: output, switch: false, pulse: {delay: 0.1}}
+            hks401_scan_next:  {driver: hks401, pin: scan_next,  mode: output, switch: false, pulse: {delay: 0.1}}
 
             # Hidden LEDs; hks401.css outlines the Ethernet button of the 0x89 focus PC.
             hks401_netfocus_pc1: {driver: hks401, pin: net_focus_pc1, mode: input}
@@ -120,6 +128,7 @@ kvmd:
                 - ["hks401_auto_detect|Auto Detect"]
                 - []
                 - ["#KM Mode", "hks401_km_passthrough|", "hks401_km_compatible|"]
+                - ["#Auto Scan Interval", "hks401_scan_5|", "hks401_scan_10|", "hks401_scan_15|", "hks401_scan_30|", "hks401_scan_60|", "hks401_scan_next|Next"]
                 - ["#Lighting", "hks401_light_off|", "hks401_light_indicator|", "hks401_light_marquee|", "hks401_light_breathing|"]
                 - ["#Fan", "hks401_fan_off|", "hks401_fan_auto|", "hks401_fan_low|", "hks401_fan_high|"]
                 - ["#Audio", "hks401_audio_pc1|", "hks401_audio_pc2|", "hks401_audio_pc3|", "hks401_audio_pc4|", "hks401_audio_next|Next"]

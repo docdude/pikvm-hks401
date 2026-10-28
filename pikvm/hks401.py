@@ -37,6 +37,10 @@ _CHOICE_PINS: Final[dict[str, tuple[str, Any, str]]] = {
         f"km_{m}": ("km_mode", m, f"set km_mode {m}")
         for m in ("passthrough", "compatible")
     },
+    **{
+        f"scan_{s}": ("scan_interval", s, f"set scan_interval {s}")
+        for s in (5, 10, 15, 30, 60)
+    },
 }
 
 # On/off pins: pin -> daemon setting name.
@@ -53,6 +57,7 @@ _BOOL_PINS: Final[dict[str, str]] = {
 _PULSE_PINS: Final[dict[str, str]] = {
     "pc_next": "select next",
     "audio_next": "set audio next",
+    "scan_next": "set scan_interval next",
 }
 
 # Read-only pins for mode: input: pin -> (state key, value).
